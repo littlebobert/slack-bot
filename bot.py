@@ -1,0 +1,273 @@
+#!/usr/bin/env python3
+"""
+Slack Bot that sends daily channel summaries at 7am JST.
+Summarizes the last 24 hours of messages, translating Japanese content,
+and provides an executive summary of the 3 most important points.
+"""
+
+import os
+import time
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
+import anthropic
+import schedule
+from dotenv import load_dotenv
+from slack_sdk import WebClient
+from slack_sdk.errors import SlackApiError
+
+# Load environment variables
+load_dotenv()
+
+# Configuration
+SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
+SLACK_CHANNEL_ID = os.getenv("SLACK_CHANNEL_ID")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+
+# Timezone
+JST = ZoneInfo("Asia/Tokyo")
+
+
+def get_slack_client() -> WebClient:
+    """Initialize and return Slack client."""
+    if not SLACK_BOT_TOKEN:
+        raise ValueError("SLACK_BOT_TOKEN environment variable is not set")
+    return WebClient(token=SLACK_BOT_TOKEN)
+
+
+def get_anthropic_client() -> anthropic.Anthropic:
+    """Initialize and return Anthropic client."""
+    if not ANTHROPIC_API_KEY:
+        raise ValueError("ANTHROPIC_API_KEY environment variable is not set")
+    return anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+
+def fetch_messages_last_24h(client: WebClient, channel_id: str) -> list[dict]:
+    """
+    Fetch all messages from the last 24 hours in the specified channel.
+    
+    Args:
+        client: Slack WebClient instance
+        channel_id: The Slack channel ID to fetch messages from
+        
+    Returns:
+        List of message dictionaries with timestamp and text
+    """
+    messages = []
+    now = datetime.now(JST)
+    oldest = (now - timedelta(hours=24)).timestamp()
+    
+    try:
+        cursor = None
+        while True:
+            response = client.conversations_history(
+                channel=channel_id,
+                oldest=str(oldest),
+                limit=200,
+                cursor=cursor
+            )
+            
+            for msg in response.get("messages", []):
+                # Skip bot messages and system messages
+                if msg.get("subtype") in ["bot_message", "channel_join", "channel_leave"]:
+                    continue
+                    
+                # Get user info for context
+                user_id = msg.get("user", "Unknown")
+                text = msg.get("text", "")
+                ts = msg.get("ts", "")
+                
+                if text:  # Only include messages with actual text
+                    # Convert timestamp to readable format
+                    msg_time = datetime.fromtimestamp(float(ts), tz=JST)
+                    messages.append({
+                        "user": user_id,
+                        "text": text,
+                        "timestamp": msg_time.strftime("%Y-%m-%d %H:%M JST")
+                    })
+            
+            # Check for pagination
+            cursor = response.get("response_metadata", {}).get("next_cursor")
+            if not cursor:
+                break
+                
+    except SlackApiError as e:
+        print(f"Error fetching messages: {e.response['error']}")
+        raise
+    
+    # Return in chronological order (oldest first)
+    return list(reversed(messages))
+
+
+def resolve_user_names(client: WebClient, messages: list[dict]) -> list[dict]:
+    """
+    Replace user IDs with display names for better readability.
+    
+    Args:
+        client: Slack WebClient instance
+        messages: List of message dictionaries
+        
+    Returns:
+        Messages with user IDs replaced by names
+    """
+    user_cache = {}
+    
+    for msg in messages:
+        user_id = msg["user"]
+        if user_id not in user_cache:
+            try:
+                response = client.users_info(user=user_id)
+                user_info = response.get("user", {})
+                # Prefer display name, fall back to real name, then username
+                user_cache[user_id] = (
+                    user_info.get("profile", {}).get("display_name") or
+                    user_info.get("real_name") or
+                    user_info.get("name") or
+                    user_id
+                )
+            except SlackApiError:
+                user_cache[user_id] = user_id
+        
+        msg["user"] = user_cache[user_id]
+    
+    return messages
+
+
+def generate_summary(client: anthropic.Anthropic, messages: list[dict]) -> str:
+    """
+    Use Claude to generate an executive summary of the messages.
+    Handles translation of Japanese content automatically.
+    
+    Args:
+        client: Anthropic client instance
+        messages: List of message dictionaries
+        
+    Returns:
+        Executive summary string
+    """
+    if not messages:
+        return "📭 No messages in the last 24 hours."
+    
+    # Format messages for the prompt
+    formatted_messages = "\n".join([
+        f"[{msg['timestamp']}] {msg['user']}: {msg['text']}"
+        for msg in messages
+    ])
+    
+    prompt = f"""You are analyzing Slack channel messages from the last 24 hours. 
+Many messages may be in Japanese - translate them to English as needed for your analysis.
+
+Here are the messages:
+
+{formatted_messages}
+
+Please provide an executive summary with exactly 3 key points - the most important things discussed or decided.
+Format your response as:
+
+📊 **Daily Channel Summary**
+_Last 24 hours ({len(messages)} messages)_
+
+**Top 3 Key Points:**
+
+1. **[Topic]**: [Brief summary - 1-2 sentences]
+
+2. **[Topic]**: [Brief summary - 1-2 sentences]
+
+3. **[Topic]**: [Brief summary - 1-2 sentences]
+
+If there are any action items or deadlines mentioned, add a brief section:
+
+**⚡ Action Items:**
+- [Action item with owner if mentioned]
+
+Keep the summary concise and actionable. Use English for the entire summary."""
+
+    response = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=1024,
+        messages=[
+            {"role": "user", "content": prompt}
+        ]
+    )
+    
+    return response.content[0].text
+
+
+def post_summary(client: WebClient, channel_id: str, summary: str) -> None:
+    """
+    Post the summary to the Slack channel.
+    
+    Args:
+        client: Slack WebClient instance
+        channel_id: The channel to post to
+        summary: The summary text to post
+    """
+    try:
+        client.chat_postMessage(
+            channel=channel_id,
+            text=summary,
+            mrkdwn=True
+        )
+        print(f"Summary posted successfully at {datetime.now(JST).strftime('%Y-%m-%d %H:%M JST')}")
+    except SlackApiError as e:
+        print(f"Error posting message: {e.response['error']}")
+        raise
+
+
+def run_daily_summary() -> None:
+    """Main function to fetch messages and post summary."""
+    print(f"Running daily summary at {datetime.now(JST).strftime('%Y-%m-%d %H:%M JST')}")
+    
+    try:
+        slack_client = get_slack_client()
+        anthropic_client = get_anthropic_client()
+        
+        if not SLACK_CHANNEL_ID:
+            raise ValueError("SLACK_CHANNEL_ID environment variable is not set")
+        
+        # Fetch messages
+        print("Fetching messages from the last 24 hours...")
+        messages = fetch_messages_last_24h(slack_client, SLACK_CHANNEL_ID)
+        print(f"Found {len(messages)} messages")
+        
+        # Resolve user names
+        if messages:
+            print("Resolving user names...")
+            messages = resolve_user_names(slack_client, messages)
+        
+        # Generate summary
+        print("Generating summary with Claude...")
+        summary = generate_summary(anthropic_client, messages)
+        
+        # Post to channel
+        print("Posting summary to channel...")
+        post_summary(slack_client, SLACK_CHANNEL_ID, summary)
+        
+    except Exception as e:
+        print(f"Error running daily summary: {e}")
+        raise
+
+
+def main():
+    """Main entry point - schedules the daily summary job."""
+    print("🤖 Slack Summary Bot starting...")
+    print(f"Current time (JST): {datetime.now(JST).strftime('%Y-%m-%d %H:%M')}")
+    print(f"Channel ID: {SLACK_CHANNEL_ID}")
+    print("Scheduled to run daily at 07:00 JST")
+    print("-" * 40)
+    
+    # Schedule the job for 7:00 AM JST
+    # The schedule library uses the system's local time, so we need to handle timezone conversion
+    schedule.every().day.at("07:00").do(run_daily_summary)
+    
+    # For testing: uncomment the next line to run immediately on startup
+    # run_daily_summary()
+    
+    # Keep the script running
+    while True:
+        schedule.run_pending()
+        time.sleep(60)  # Check every minute
+
+
+if __name__ == "__main__":
+    main()
