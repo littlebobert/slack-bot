@@ -154,33 +154,28 @@ def generate_summary(client: anthropic.Anthropic, messages: list[dict]) -> str:
         for msg in messages
     ])
     
-    prompt = f"""You are analyzing Slack channel messages from the last 24 hours. 
-Many messages may be in Japanese - translate them to English as needed for your analysis.
-
-Here are the messages:
+    prompt = f"""Analyze these Slack messages from the last 24 hours. Translate any Japanese to English.
 
 {formatted_messages}
 
-Please provide an executive summary with exactly 3 key points - the most important things discussed or decided.
-Format your response as:
+Write a tight executive summary: the 3 most important things discussed/decided.
 
-📊 **Daily Channel Summary**
-_Last 24 hours ({len(messages)} messages)_
+Use Slack mrkdwn format (NOT standard Markdown):
+- Bold: *text* (single asterisks)
+- Italic: _text_
 
-**Top 3 Key Points:**
+Format exactly like this:
 
-1. **[Topic]**: [Brief summary - 1-2 sentences]
+*Daily Summary* ({len(messages)} messages)
 
-2. **[Topic]**: [Brief summary - 1-2 sentences]
+*1. Topic* — One sentence summary
+*2. Topic* — One sentence summary
+*3. Topic* — One sentence summary
 
-3. **[Topic]**: [Brief summary - 1-2 sentences]
+If action items exist, add:
+*Action Items:* @person: task; @person: task
 
-If there are any action items or deadlines mentioned, add a brief section:
-
-**⚡ Action Items:**
-- [Action item with owner if mentioned]
-
-Keep the summary concise and actionable. Use English for the entire summary."""
+Keep it brief. No extra line breaks. English only."""
 
     response = client.messages.create(
         model="claude-sonnet-4-20250514",
