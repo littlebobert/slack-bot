@@ -44,7 +44,8 @@ def get_anthropic_client() -> anthropic.Anthropic:
 
 def fetch_messages_last_24h(client: WebClient, channel_id: str) -> list[dict]:
     """
-    Fetch all messages from the last 24 hours in the specified channel.
+    Fetch all messages from the last 24 hours in the specified channel,
+    including thread replies.
     
     Args:
         client: Slack WebClient instance
@@ -57,8 +58,61 @@ def fetch_messages_last_24h(client: WebClient, channel_id: str) -> list[dict]:
     now = datetime.now(JST)
     oldest = (now - timedelta(hours=24)).timestamp()
     
+    def parse_message(msg: dict, thread_id: str | None = None) -> dict | None:
+        """Parse a single message into our format."""
+        # Skip bot messages and system messages
+        if msg.get("subtype") in ["bot_message", "channel_join", "channel_leave"]:
+            return None
+            
+        user_id = msg.get("user", "Unknown")
+        text = msg.get("text", "")
+        ts = msg.get("ts", "")
+        
+        if not text:
+            return None
+            
+        msg_time = datetime.fromtimestamp(float(ts), tz=JST)
+        return {
+            "user": user_id,
+            "text": text,
+            "timestamp": msg_time.strftime("%Y-%m-%d %H:%M JST"),
+            "thread_id": thread_id,
+            "ts": ts  # Keep for sorting
+        }
+    
+    def fetch_thread_replies(thread_ts: str) -> list[dict]:
+        """Fetch all replies in a thread."""
+        replies = []
+        cursor = None
+        
+        while True:
+            response = client.conversations_replies(
+                channel=channel_id,
+                ts=thread_ts,
+                oldest=str(oldest),
+                limit=200,
+                cursor=cursor
+            )
+            
+            for msg in response.get("messages", []):
+                # Skip the parent message (it's included in replies response)
+                if msg.get("ts") == thread_ts:
+                    continue
+                    
+                parsed = parse_message(msg, thread_id=thread_ts)
+                if parsed:
+                    replies.append(parsed)
+            
+            cursor = response.get("response_metadata", {}).get("next_cursor")
+            if not cursor:
+                break
+                
+        return replies
+    
     try:
         cursor = None
+        threads_to_fetch = []
+        
         while True:
             response = client.conversations_history(
                 channel=channel_id,
@@ -68,35 +122,35 @@ def fetch_messages_last_24h(client: WebClient, channel_id: str) -> list[dict]:
             )
             
             for msg in response.get("messages", []):
-                # Skip bot messages and system messages
-                if msg.get("subtype") in ["bot_message", "channel_join", "channel_leave"]:
-                    continue
-                    
-                # Get user info for context
-                user_id = msg.get("user", "Unknown")
-                text = msg.get("text", "")
-                ts = msg.get("ts", "")
+                parsed = parse_message(msg)
+                if parsed:
+                    messages.append(parsed)
                 
-                if text:  # Only include messages with actual text
-                    # Convert timestamp to readable format
-                    msg_time = datetime.fromtimestamp(float(ts), tz=JST)
-                    messages.append({
-                        "user": user_id,
-                        "text": text,
-                        "timestamp": msg_time.strftime("%Y-%m-%d %H:%M JST")
-                    })
+                # Check if this message has thread replies
+                if msg.get("reply_count", 0) > 0:
+                    threads_to_fetch.append(msg.get("ts"))
             
-            # Check for pagination
             cursor = response.get("response_metadata", {}).get("next_cursor")
             if not cursor:
                 break
+        
+        # Fetch all thread replies
+        for thread_ts in threads_to_fetch:
+            replies = fetch_thread_replies(thread_ts)
+            messages.extend(replies)
                 
     except SlackApiError as e:
         print(f"Error fetching messages: {e.response['error']}")
         raise
     
-    # Return in chronological order (oldest first)
-    return list(reversed(messages))
+    # Sort by timestamp and return in chronological order
+    messages.sort(key=lambda m: m["ts"])
+    
+    # Remove the ts field (only needed for sorting)
+    for msg in messages:
+        del msg["ts"]
+    
+    return messages
 
 
 def resolve_user_names(client: WebClient, messages: list[dict]) -> list[dict]:
@@ -150,7 +204,7 @@ def generate_summary(client: anthropic.Anthropic, messages: list[dict]) -> str:
     
     # Format messages for the prompt
     formatted_messages = "\n".join([
-        f"[{msg['timestamp']}] {msg['user']}: {msg['text']}"
+        f"[{msg['timestamp']}] {msg['user']}{' (in thread)' if msg.get('thread_id') else ''}: {msg['text']}"
         for msg in messages
     ])
     
