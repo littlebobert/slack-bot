@@ -6,6 +6,7 @@ and provides an executive summary of the 3 most important points.
 """
 
 import os
+import re
 import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -153,21 +154,22 @@ def fetch_messages_last_24h(client: WebClient, channel_id: str) -> list[dict]:
     return messages
 
 
-def resolve_user_names(client: WebClient, messages: list[dict]) -> list[dict]:
+def resolve_user_names(client: WebClient, messages: list[dict]) -> tuple[list[dict], dict[str, str]]:
     """
     Replace user IDs with display names for better readability.
+    Also replaces <@USER_ID> mentions in message text with display names.
     
     Args:
         client: Slack WebClient instance
         messages: List of message dictionaries
         
     Returns:
-        Messages with user IDs replaced by names
+        Tuple of (messages with user IDs replaced by names, name-to-ID mapping)
     """
-    user_cache = {}
+    user_cache = {}  # user_id -> display_name
     
-    for msg in messages:
-        user_id = msg["user"]
+    def get_display_name(user_id: str) -> str:
+        """Look up and cache a user's display name."""
         if user_id not in user_cache:
             try:
                 response = client.users_info(user=user_id)
@@ -181,10 +183,61 @@ def resolve_user_names(client: WebClient, messages: list[dict]) -> list[dict]:
                 )
             except SlackApiError:
                 user_cache[user_id] = user_id
-        
-        msg["user"] = user_cache[user_id]
+        return user_cache[user_id]
     
-    return messages
+    def replace_user_mentions(text: str) -> str:
+        """Replace <@USER_ID> mentions in text with display names."""
+        def replace_match(match):
+            user_id = match.group(1)
+            return f"@{get_display_name(user_id)}"
+        return re.sub(r'<@([A-Z0-9]+)>', replace_match, text)
+    
+    for msg in messages:
+        # Replace the user field with display name
+        msg["user"] = get_display_name(msg["user"])
+        # Replace any <@USER_ID> mentions in the message text
+        msg["text"] = replace_user_mentions(msg["text"])
+    
+    # Create reverse mapping: name -> user_id (for @mention replacement in output)
+    # Include lowercase versions for case-insensitive matching
+    name_to_id = {}
+    for user_id, name in user_cache.items():
+        name_to_id[name.lower()] = user_id
+        # Also add first name only for partial matches
+        first_name = name.split()[0] if name else ""
+        if first_name and first_name.lower() not in name_to_id:
+            name_to_id[first_name.lower()] = user_id
+    
+    return messages, name_to_id
+
+
+def replace_mentions(text: str, name_to_id: dict[str, str]) -> str:
+    """
+    Replace @mentions in text with proper Slack user mentions.
+    
+    Args:
+        text: The text containing @mentions
+        name_to_id: Mapping of lowercase names to user IDs
+        
+    Returns:
+        Text with @mentions replaced by <@USER_ID> format
+    """
+    def replace_match(match):
+        # Get the name after @ (without the @)
+        name = match.group(1)
+        name_lower = name.lower()
+        
+        # Try to find a matching user ID
+        if name_lower in name_to_id:
+            return f"<@{name_to_id[name_lower]}>"
+        
+        # No match found, keep original
+        return match.group(0)
+    
+    # Match @Name or @"Name with spaces" patterns
+    # This handles: @Justin, @justin, @Justin Garcia (as @Justin)
+    pattern = r'@(\w+)'
+    return re.sub(pattern, replace_match, text)
 
 
 def generate_summary(client: anthropic.Anthropic, messages: list[dict]) -> str:
@@ -229,7 +282,7 @@ Format exactly like this:
 If action items exist, add:
 *Action Items:* @person: task; @person: task
 
-Keep it brief. No extra line breaks. English only."""
+Keep it brief. No extra line breaks. English only. Use first names only for @mentions (e.g., @Justin not @Justin Garcia)."""
 
     response = client.messages.create(
         model="claude-sonnet-4-20250514",
@@ -280,13 +333,18 @@ def run_daily_summary() -> None:
         print(f"Found {len(messages)} messages")
         
         # Resolve user names
+        name_to_id = {}
         if messages:
             print("Resolving user names...")
-            messages = resolve_user_names(slack_client, messages)
+            messages, name_to_id = resolve_user_names(slack_client, messages)
         
         # Generate summary
         print("Generating summary with Claude...")
         summary = generate_summary(anthropic_client, messages)
+        
+        # Replace @mentions with real Slack mentions
+        if name_to_id:
+            summary = replace_mentions(summary, name_to_id)
         
         # Post to channel
         print("Posting summary to channel...")
