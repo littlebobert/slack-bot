@@ -318,7 +318,14 @@ def post_summary(client: WebClient, channel_id: str, summary: str) -> None:
 
 def run_daily_summary() -> None:
     """Main function to fetch messages and post summary."""
-    print(f"Running daily summary at {datetime.now(JST).strftime('%Y-%m-%d %H:%M JST')}")
+    now = datetime.now(JST)
+    
+    # Skip Sunday (weekday() returns 6 for Sunday)
+    if now.weekday() == 6:
+        print(f"Skipping summary on Sunday ({now.strftime('%Y-%m-%d %H:%M JST')})")
+        return
+    
+    print(f"Running daily summary at {now.strftime('%Y-%m-%d %H:%M JST')}")
     
     try:
         slack_client = get_slack_client()
