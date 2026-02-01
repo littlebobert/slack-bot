@@ -280,9 +280,9 @@ Format exactly like this:
 *3. Topic* — One sentence summary
 
 If action items exist, add:
-*Action Items:* @person: task; @person: task
+*Action Items:* Person: task; Person: task (use plain names, no @ symbol)
 
-Keep it brief. No extra line breaks. English only. Use first names only for @mentions (e.g., @Justin not @Justin Garcia)."""
+Keep it brief. No extra line breaks. English only. Use first names only for @mentions in the summary points (e.g., @Justin not @Justin Garcia), but do NOT use @ in Action Items to avoid pinging people."""
 
     response = client.messages.create(
         model="claude-sonnet-4-20250514",
