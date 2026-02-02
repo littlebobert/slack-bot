@@ -261,7 +261,9 @@ def generate_summary(client: anthropic.Anthropic, messages: list[dict]) -> str:
         for msg in messages
     ])
     
-    prompt = f"""Analyze these Slack messages from the last 24 hours. Translate any Japanese to English.
+    prompt = f"""Analyze these Slack messages from the last 24 hours.
+
+Translate any Japanese to English silently for your understanding, but DO NOT output a translation section, DO NOT list messages, and DO NOT quote the message log. Use the translated meaning only to write the summary.
 
 {formatted_messages}
 
@@ -271,7 +273,7 @@ Use Slack mrkdwn format (NOT standard Markdown):
 - Bold: *text* (single asterisks)
 - Italic: _text_
 
-Format exactly like this:
+Output ONLY the summary in exactly this format (no extra headings like "Translation of Japanese messages", no preamble):
 
 *Daily Summary* ({len(messages)} messages)
 
@@ -292,7 +294,16 @@ Keep it brief. No extra line breaks. English only. Use first names only for @men
         ]
     )
     
-    return response.content[0].text
+    text = response.content[0].text
+
+    # Defensive cleanup: if the model still outputs a translation/message-log section,
+    # drop everything before the actual summary header.
+    marker = "*Daily Summary*"
+    idx = text.find(marker)
+    if idx > 0:
+        text = text[idx:]
+
+    return text
 
 
 def post_summary(client: WebClient, channel_id: str, summary: str) -> None:
