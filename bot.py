@@ -267,7 +267,11 @@ Translate any Japanese to English silently for your understanding, but DO NOT ou
 
 {formatted_messages}
 
-Write a tight executive summary: the 3 most important things discussed/decided.
+Write a tight executive summary of the 3 most important things discussed/decided.
+
+Rules:
+- Each topic must be about ONE distinct thing. Never combine unrelated subjects into a single point.
+- Pick the 3 topics that matter most. It's fine to leave things out.
 
 Use Slack mrkdwn format (NOT standard Markdown):
 - Bold: *text* (single asterisks)
@@ -287,7 +291,7 @@ If action items exist, add:
 Keep it brief. No extra line breaks. English only. Use first names only for @mentions in the summary points (e.g., @Justin not @Justin Garcia), but do NOT use @ in Action Items to avoid pinging people."""
 
     response = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-opus-4-6",
         max_tokens=1024,
         messages=[
             {"role": "user", "content": prompt}
