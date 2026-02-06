@@ -286,9 +286,9 @@ Output ONLY the summary in exactly this format (no extra headings like "Translat
 *3. Topic* — One sentence summary
 
 If action items exist, add:
-*Action Items:* Person: task; Person: task (use plain names, no @ symbol)
+*Action Items:* Person: task; Person: task
 
-Keep it brief. No extra line breaks. English only. Use first names only for @mentions in the summary points (e.g., @Justin not @Justin Garcia), but do NOT use @ in Action Items to avoid pinging people."""
+Keep it brief. No extra line breaks. English only. Use first names only when referring to people. NEVER prefix names with @ — just use the plain name (e.g., "Justin" not "@Justin") to avoid pinging people in Slack."""
 
     response = client.messages.create(
         model="claude-opus-4-6",
@@ -363,10 +363,6 @@ def run_daily_summary() -> None:
         # Generate summary
         print("Generating summary with Claude...")
         summary = generate_summary(anthropic_client, messages)
-        
-        # Replace @mentions with real Slack mentions
-        if name_to_id:
-            summary = replace_mentions(summary, name_to_id)
         
         # Post to channel
         print("Posting summary to channel...")
