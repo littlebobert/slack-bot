@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Slack Bot that sends daily channel summaries at 7am JST.
-Summarizes the last 24 hours of messages, translating Japanese content,
+Summarizes the last 24 hours of messages in Japanese
 and provides an executive summary of the 3 most important points.
 """
 
@@ -242,8 +242,7 @@ def replace_mentions(text: str, name_to_id: dict[str, str]) -> str:
 
 def generate_summary(client: anthropic.Anthropic, messages: list[dict]) -> str:
     """
-    Use Claude to generate an executive summary of the messages.
-    Handles translation of Japanese content automatically.
+    Use Claude to generate an executive summary of the messages in Japanese.
     
     Args:
         client: Anthropic client instance
@@ -253,7 +252,7 @@ def generate_summary(client: anthropic.Anthropic, messages: list[dict]) -> str:
         Executive summary string
     """
     if not messages:
-        return "📭 No messages in the last 24 hours."
+        return "📭 過去24時間のメッセージはありませんでした。"
     
     # Format messages for the prompt
     formatted_messages = "\n".join([
@@ -261,34 +260,34 @@ def generate_summary(client: anthropic.Anthropic, messages: list[dict]) -> str:
         for msg in messages
     ])
     
-    prompt = f"""Analyze these Slack messages from the last 24 hours.
+    prompt = f"""以下は過去24時間のSlackメッセージです。
 
-Translate any Japanese to English silently for your understanding, but DO NOT output a translation section, DO NOT list messages, and DO NOT quote the message log. Use the translated meaning only to write the summary.
+英語や他言語が含まれていても内容を理解し、出力は必ず自然な日本語だけにしてください。翻訳セクションは出さないでください。メッセージ一覧の列挙や引用も禁止です。意味だけを使って要約してください。
 
 {formatted_messages}
 
-Write a tight executive summary of the 3 most important things discussed/decided.
+議論・決定された内容のうち、重要な3点を簡潔なエグゼクティブサマリーにしてください。
 
-Rules:
-- Each topic must be about ONE distinct thing. Never combine unrelated subjects into a single point.
-- Pick the 3 topics that matter most. It's fine to leave things out.
+ルール:
+- 各項目は必ず1つの独立したトピックだけを扱うこと。無関係な話題を1つにまとめないこと。
+- 最も重要な3トピックを選ぶこと。重要度の低い内容は省略してよい。
 
-Use Slack mrkdwn format (NOT standard Markdown):
-- Bold: *text* (single asterisks)
-- Italic: _text_
+Slack mrkdwn形式を使うこと:
+- 太字: *text* （アスタリスク1つ）
+- 斜体: _text_
 
-Output ONLY the summary in exactly this format (no extra headings like "Translation of Japanese messages", no preamble):
+出力は要約本文のみとし、必ず次の形式に厳密に従ってください（前置きや余計な見出しは禁止）:
 
-*Daily Summary* ({len(messages)} messages)
+*日次サマリー* ({len(messages)}件)
 
-*1. Topic* — One sentence summary
-*2. Topic* — One sentence summary
-*3. Topic* — One sentence summary
+*1. トピック* 1文の要約
+*2. トピック* 1文の要約
+*3. トピック* 1文の要約
 
-If action items exist, add:
-*Action Items:* Person: task; Person: task
+アクションアイテムがある場合のみ、最後に次を追加:
+*アクションアイテム:* 人名: タスク; 人名: タスク
 
-Keep it brief. No extra line breaks. English only. Use first names only when referring to people. NEVER prefix names with @ — just use the plain name (e.g., "Justin" not "@Justin") to avoid pinging people in Slack."""
+簡潔にしてください。余計な改行は禁止。人名はファーストネームのみで書いてください。Slackで通知が飛ばないよう、名前の前に@は絶対につけないでください。"""
 
     response = client.messages.create(
         model="claude-opus-4-6",
@@ -302,7 +301,7 @@ Keep it brief. No extra line breaks. English only. Use first names only when ref
 
     # Defensive cleanup: if the model still outputs a translation/message-log section,
     # drop everything before the actual summary header.
-    marker = "*Daily Summary*"
+    marker = "*日次サマリー*"
     idx = text.find(marker)
     if idx > 0:
         text = text[idx:]
@@ -335,9 +334,9 @@ def run_daily_summary() -> None:
     """Main function to fetch messages and post summary."""
     now = datetime.now(JST)
     
-    # Skip Sunday (weekday() returns 6 for Sunday)
-    if now.weekday() == 6:
-        print(f"Skipping summary on Sunday ({now.strftime('%Y-%m-%d %H:%M JST')})")
+    # Skip weekends (weekday() returns 5 for Saturday, 6 for Sunday)
+    if now.weekday() >= 5:
+        print(f"Skipping summary on weekend ({now.strftime('%Y-%m-%d %H:%M JST')})")
         return
     
     print(f"Running daily summary at {now.strftime('%Y-%m-%d %H:%M JST')}")
@@ -378,7 +377,7 @@ def main():
     print("🤖 Slack Summary Bot starting...")
     print(f"Current time (JST): {datetime.now(JST).strftime('%Y-%m-%d %H:%M')}")
     print(f"Channel ID: {SLACK_CHANNEL_ID}")
-    print("Scheduled to run daily at 07:00 JST")
+    print("Scheduled to check daily at 07:00 JST (weekends skipped)")
     print("-" * 40)
     
     # Schedule the job for 7:00 AM JST
