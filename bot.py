@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Slack Bot that sends daily channel summaries at 7am JST.
-Summarizes the last 24 hours of messages in Japanese
+Summarizes messages since the previous scheduled summary in Japanese
 and provides an executive summary of the 3 most important points.
 """
 
@@ -29,6 +29,18 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 JST = ZoneInfo("Asia/Tokyo")
 
 
+def get_summary_window_start(now: datetime) -> datetime:
+    """
+    Return the start of the summary window in JST.
+
+    Monday summaries include Friday plus the weekend because Saturday and
+    Sunday posts are skipped.
+    """
+    if now.weekday() == 0:
+        return now - timedelta(days=3)
+    return now - timedelta(days=1)
+
+
 def get_slack_client() -> WebClient:
     """Initialize and return Slack client."""
     if not SLACK_BOT_TOKEN:
@@ -43,21 +55,25 @@ def get_anthropic_client() -> anthropic.Anthropic:
     return anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 
-def fetch_messages_last_24h(client: WebClient, channel_id: str) -> list[dict]:
+def fetch_messages_for_window(
+    client: WebClient,
+    channel_id: str,
+    start_time: datetime,
+) -> list[dict]:
     """
-    Fetch all messages from the last 24 hours in the specified channel,
+    Fetch all messages from the specified start time in the channel,
     including thread replies.
     
     Args:
         client: Slack WebClient instance
         channel_id: The Slack channel ID to fetch messages from
+        start_time: Start of the summary window in JST
         
     Returns:
         List of message dictionaries with timestamp and text
     """
     messages = []
-    now = datetime.now(JST)
-    oldest = (now - timedelta(hours=24)).timestamp()
+    oldest = start_time.timestamp()
     
     def parse_message(msg: dict, thread_id: str | None = None) -> dict | None:
         """Parse a single message into our format."""
@@ -240,19 +256,24 @@ def replace_mentions(text: str, name_to_id: dict[str, str]) -> str:
     return re.sub(pattern, replace_match, text)
 
 
-def generate_summary(client: anthropic.Anthropic, messages: list[dict]) -> str:
+def generate_summary(
+    client: anthropic.Anthropic,
+    messages: list[dict],
+    window_label: str,
+) -> str:
     """
     Use Claude to generate an executive summary of the messages in Japanese.
     
     Args:
         client: Anthropic client instance
         messages: List of message dictionaries
+        window_label: Human-readable summary window label
         
     Returns:
         Executive summary string
     """
     if not messages:
-        return "📭 過去24時間のメッセージはありませんでした。"
+        return f"📭 {window_label} のメッセージはありませんでした。"
     
     # Format messages for the prompt
     formatted_messages = "\n".join([
@@ -260,7 +281,7 @@ def generate_summary(client: anthropic.Anthropic, messages: list[dict]) -> str:
         for msg in messages
     ])
     
-    prompt = f"""以下は過去24時間のSlackメッセージです。
+    prompt = f"""以下は {window_label} のSlackメッセージです。
 
 英語や他言語が含まれていても内容を理解し、出力は必ず自然な日本語だけにしてください。翻訳セクションは出さないでください。メッセージ一覧の列挙や引用も禁止です。意味だけを使って要約してください。
 
@@ -338,6 +359,12 @@ def run_daily_summary() -> None:
     if now.weekday() >= 5:
         print(f"Skipping summary on weekend ({now.strftime('%Y-%m-%d %H:%M JST')})")
         return
+
+    window_start = get_summary_window_start(now)
+    window_label = (
+        f"{window_start.strftime('%Y-%m-%d %H:%M JST')}"
+        f"〜{now.strftime('%Y-%m-%d %H:%M JST')}"
+    )
     
     print(f"Running daily summary at {now.strftime('%Y-%m-%d %H:%M JST')}")
     
@@ -349,8 +376,12 @@ def run_daily_summary() -> None:
             raise ValueError("SLACK_CHANNEL_ID environment variable is not set")
         
         # Fetch messages
-        print("Fetching messages from the last 24 hours...")
-        messages = fetch_messages_last_24h(slack_client, SLACK_CHANNEL_ID)
+        print(f"Fetching messages from {window_label}...")
+        messages = fetch_messages_for_window(
+            slack_client,
+            SLACK_CHANNEL_ID,
+            window_start,
+        )
         print(f"Found {len(messages)} messages")
         
         # Resolve user names
@@ -361,7 +392,7 @@ def run_daily_summary() -> None:
         
         # Generate summary
         print("Generating summary with Claude...")
-        summary = generate_summary(anthropic_client, messages)
+        summary = generate_summary(anthropic_client, messages, window_label)
         
         # Post to channel
         print("Posting summary to channel...")
