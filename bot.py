@@ -163,10 +163,6 @@ def fetch_messages_for_window(
     # Sort by timestamp and return in chronological order
     messages.sort(key=lambda m: m["ts"])
     
-    # Remove the ts field (only needed for sorting)
-    for msg in messages:
-        del msg["ts"]
-    
     return messages
 
 
@@ -311,7 +307,7 @@ Slack mrkdwn形式を使うこと:
 簡潔にしてください。余計な改行は禁止。人名はファーストネームのみで書いてください。Slackで通知が飛ばないよう、名前の前に@は絶対につけないでください。"""
 
     response = client.messages.create(
-        model="claude-opus-4-6",
+        model="claude-opus-4-7",
         max_tokens=1024,
         messages=[
             {"role": "user", "content": prompt}
@@ -330,7 +326,7 @@ Slack mrkdwn形式を使うこと:
     return text
 
 
-def post_summary(client: WebClient, channel_id: str, summary: str) -> None:
+def post_summary(client: WebClient, channel_id: str, summary: str) -> str:
     """
     Post the summary to the Slack channel.
     
@@ -338,17 +334,56 @@ def post_summary(client: WebClient, channel_id: str, summary: str) -> None:
         client: Slack WebClient instance
         channel_id: The channel to post to
         summary: The summary text to post
+        
+    Returns:
+        The timestamp of the posted message (used as thread_ts for replies)
     """
     try:
-        client.chat_postMessage(
+        response = client.chat_postMessage(
             channel=channel_id,
             text=summary,
             mrkdwn=True
         )
         print(f"Summary posted successfully at {datetime.now(JST).strftime('%Y-%m-%d %H:%M JST')}")
+        return response["ts"]
     except SlackApiError as e:
         print(f"Error posting message: {e.response['error']}")
         raise
+
+
+def post_english_translation(
+    anthropic_client: anthropic.Anthropic,
+    slack_client: WebClient,
+    channel_id: str,
+    summary: str,
+    thread_ts: str,
+) -> None:
+    """Translate the Japanese summary to English and post it as a thread reply."""
+    try:
+        response = anthropic_client.messages.create(
+            model="claude-opus-4-7",
+            max_tokens=1024,
+            messages=[{
+                "role": "user",
+                "content": (
+                    "Translate the following Japanese Slack summary to natural English. "
+                    "Keep the same Slack mrkdwn formatting (*bold*, _italic_). "
+                    "Output ONLY the translated summary, nothing else.\n\n"
+                    f"{summary}"
+                ),
+            }],
+        )
+        translation = response.content[0].text.strip()
+
+        slack_client.chat_postMessage(
+            channel=channel_id,
+            thread_ts=thread_ts,
+            text=translation,
+            mrkdwn=True,
+        )
+        print("English translation posted as thread reply")
+    except Exception as e:
+        print(f"Error posting English translation: {e}")
 
 
 def run_daily_summary() -> None:
@@ -396,7 +431,13 @@ def run_daily_summary() -> None:
         
         # Post to channel
         print("Posting summary to channel...")
-        post_summary(slack_client, SLACK_CHANNEL_ID, summary)
+        summary_ts = post_summary(slack_client, SLACK_CHANNEL_ID, summary)
+
+        # Post English translation as a thread reply
+        print("Posting English translation...")
+        post_english_translation(
+            anthropic_client, slack_client, SLACK_CHANNEL_ID, summary, summary_ts
+        )
         
     except Exception as e:
         print(f"Error running daily summary: {e}")
